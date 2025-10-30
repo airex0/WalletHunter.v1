@@ -1,3 +1,5 @@
+# services/analytics_service.py (v5.1 - Final)
+
 import sqlite3
 from loguru import logger
 from typing import Dict
@@ -19,13 +21,15 @@ class AnalyticsService:
                 for strategy, count in rows:
                     if strategy in performance:
                         performance[strategy] += count
-                total_points = sum(performance.values())
-                if total_points > 3:
-                    for strategy in performance:
-                        performance[strategy] = (performance[strategy] / total_points) * 100
-                    logger.info(f"تم حساب أداء الاستراتيجيات: {performance}")
-                    return performance
+
+            total_points = sum(performance.values())
+            if total_points > 3:
+                for strategy in performance:
+                    performance[strategy] = (performance[strategy] / total_points) * 100
+
+                logger.info(f"Calculated strategy performance: {performance}")
+                return performance
         except sqlite3.Error as e:
-            logger.error(f"فشل تحليل أداء الاستراتيجيات: {e}")
-        
+            logger.error(f"Failed to analyze strategy performance: {e}")
+
         return {"random": 34, "sequential": 33, "wordlist": 33}

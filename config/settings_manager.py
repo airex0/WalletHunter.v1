@@ -1,10 +1,24 @@
-# config/settings_manager.py (v4.0 - Final)
+# config/settings_manager.py (v5.1 - Final)
 
 import json
 import os
 from loguru import logger
 from cryptography.fernet import Fernet
 from .app_config import SETTINGS_FILE_PATH, APP_KEY_PATH, DEFAULT_NETWORKS, DEFAULT_STRATEGIES
+
+# --- تطبيق نمط Singleton لضمان وجود نسخة واحدة فقط ---
+_instance = None
+
+def get_settings_manager():
+    """
+    هذه الدالة تضمن أننا دائمًا نحصل على نفس النسخة (instance) من SettingsManager.
+    هذا يحل مشكلة عدم تزامن الإعدادات بين الواجهة والمحرك.
+    """
+    global _instance
+    if _instance is None:
+        _instance = SettingsManager()
+    return _instance
+# ----------------------------------------------------
 
 class SettingsManager:
     """
@@ -13,16 +27,16 @@ class SettingsManager:
     يطبق نمط المراقب (Observer Pattern) لإبلاغ المكونات الأخرى بالتغييرات فورًا.
     """
     def __init__(self):
+        if _instance is not None:
+            raise Exception("This class is a singleton! Use get_settings_manager() instead.")
+
         self._observers = []
         self._encryption_key = self._load_or_create_key()
         self._cipher = Fernet(self._encryption_key)
         self.settings = self._load_settings()
 
     def register_observer(self, observer):
-        """
-        تسجيل مكون جديد (مثل ScannerEngine) ليتلقى تحديثات الإعدادات.
-        يتم استدعاء `on_settings_updated` على المراقب عند حدوث تغيير.
-        """
+        """تسجيل مكون جديد (مثل ScannerEngine) ليتلقى تحديثات الإعدادات."""
         if observer not in self._observers:
             self._observers.append(observer)
             logger.info(f"Observer registered: {observer.__class__.__name__}")

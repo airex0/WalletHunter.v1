@@ -1,4 +1,4 @@
-# ui/views.py (v5.0 - Final)
+# ui/views.py (v6.0 - Final)
 
 import flet as ft
 import asyncio
@@ -12,42 +12,55 @@ from core.state import AppState
 from core.engine import ScannerEngine
 from .components import KPI, SystemMonitorGauge
 from utils.system_monitor import SystemMonitor
-from config.settings_manager import SettingsManager
+from config.settings_manager import get_settings_manager
 from config.app_config import WORDLISTS_DIR
 from core.models import FoundWallet
 
 class MainView(ft.View):
+    """
+    العرض الرئيسي للتطبيق (لوحة المعلومات).
+    هذا الكلاس مسؤول فقط عن عرض البيانات واستقبال أوامر المستخدم.
+    لا يحتوي على أي منطق عمل، بل يتفاعل مع الباك إند عبر طابور الأحداث.
+    """
     def __init__(self, app_state: AppState, go_func):
         super().__init__(route="/", scroll=ft.ScrollMode.ADAPTIVE)
         self.app_state = app_state
         self.go = go_func
 
-        if not app_state.engine: app_state.engine = ScannerEngine(app_state)
+        # التأكد من وجود نسخة واحدة فقط من الخدمات الأساسية
+        if not app_state.engine: 
+            app_state.engine = ScannerEngine(app_state)
         self.engine = app_state.engine
 
-        if not app_state.sys_monitor: app_state.sys_monitor = SystemMonitor(app_state)
+        if not app_state.sys_monitor: 
+            app_state.sys_monitor = SystemMonitor(app_state)
         self.sys_monitor = app_state.sys_monitor
 
         self.build_components()
 
     def build_components(self):
+        # --- مكونات الواجهة ---
         self.kpi_session = ft.Text("0", size=28, weight=ft.FontWeight.BOLD)
         self.kpi_found = ft.Text("0", size=28, weight=ft.FontWeight.BOLD, color="green400")
         self.kpi_speed = ft.Text("0.00", size=28, weight=ft.FontWeight.BOLD)
+
         self.cpu_progress = ft.ProgressBar(width=100, color="orange", bgcolor="#444444")
         self.cpu_text = ft.Text("0.0%")
         self.ram_progress = ft.ProgressBar(width=100, color="lightblue", bgcolor="#444444")
         self.ram_text = ft.Text("0.0%")
+
         self.start_stop_button = ft.ElevatedButton(
             text="🚀 ابدأ الفحص", on_click=self.toggle_scan, icon="play_arrow", height=50, width=250,
             style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=10))
         )
+
         self.results_table = ft.DataTable(columns=[
             ft.DataColumn(ft.Text("العنوان")), ft.DataColumn(ft.Text("الشبكة")),
             ft.DataColumn(ft.Text("الرصيد"), numeric=True), ft.DataColumn(ft.Text("تصنيف AI")),
             ft.DataColumn(ft.Text("الاستراتيجية")),
         ], rows=[])
         self.log_view = ft.ListView(expand=True, auto_scroll=True, spacing=5)
+
         self.api_status_indicator = ft.Row([
             ft.CircleAvatar(radius=5, color="orange"), ft.Text("API Status: Checking...")
         ], alignment=ft.MainAxisAlignment.CENTER)
@@ -76,6 +89,7 @@ class MainView(ft.View):
         ]
 
     def handle_event(self, event):
+        """المعالج المركزي للأحداث. هذا هو المكان الوحيد الذي يتم فيه تحديث الواجهة."""
         event_type, data = event["type"], event["data"]
 
         if event_type == "stats_update":
@@ -126,6 +140,9 @@ class MainView(ft.View):
                 self.page.snack_bar = ft.SnackBar(ft.Text("❌ خطأ: يرجى إدخال مفتاح Alchemy API أولاً."), open=True)
                 self.page.update()
                 return
+
+            self.start_stop_button.text, self.start_stop_button.disabled = "⏳ جاري البدء...", True
+            self.page.update()
             self.engine.start_scan_in_thread()
 
     async def did_mount_async(self):
@@ -145,7 +162,7 @@ class SettingsView(ft.View):
         super().__init__(route="/settings", scroll=ft.ScrollMode.ADAPTIVE)
         self.app_state = app_state
         self.go = go_func
-        self.settings_manager = SettingsManager()
+        self.settings_manager = get_settings_manager()
 
         self.build_components()
 
@@ -175,14 +192,8 @@ class SettingsView(ft.View):
         allocations = strategies.get("allocations", {})
         self.ai_switch = ft.Switch(label="إدارة تلقائية بواسطة AI", value=strategies.get("ai_managed", True), on_change=self.toggle_ai_management)
 
-        self.random_slider = ft.Slider(min=0, max=100, divisions=100, value=allocations.get("random", 80), label="{value}%")
-        self.sequential_slider = ft.Slider(min=0, max=100, divisions=100, value=allocations.get("sequential", 10), label="{value}%")
-        self.wordlist_slider = ft.Slider(min=0, max=100, divisions=100, value=allocations.get("wordlist", 10), label="{value}%")
-        self.sliders = [self.random_slider, self.sequential_slider, self.wordlist_slider]
-
         self.strategy_allocations_view = ft.Column()
         self.update_strategy_allocations_display(allocations)
-        self.toggle_ai_management()
 
         self.wordlist_manager_view = ft.Column(scroll=ft.ScrollMode.ADAPTIVE, height=150)
         self.update_wordlist_display()
@@ -216,16 +227,13 @@ class SettingsView(ft.View):
         self.layout = ft.Container(content=column_content, padding=20)
 
     def toggle_ai_management(self, e=None):
-        is_ai_managed = self.ai_switch.value
-        for slider in self.sliders:
-            slider.disabled = is_ai_managed
-        if self.page:
-            self.page.update()
+        self.update_strategy_allocations_display(self.settings_manager.get("strategies.allocations"))
 
     def update_strategy_allocations_display(self, allocations: dict):
         self.strategy_allocations_view.controls.clear()
+        is_ai_managed = self.ai_switch.value
 
-        if self.ai_switch.value:
+        if is_ai_managed:
             total = sum(allocations.values())
             if total == 0: total = 1
             for name, value in allocations.items():
@@ -237,7 +245,11 @@ class SettingsView(ft.View):
                         ft.Text(f"{percentage:.1f}%")
                     ])
                 )
-        else: # Manual mode
+        else:
+            self.random_slider = ft.Slider(min=0, max=100, divisions=100, value=allocations.get("random", 80), label="{value}%")
+            self.sequential_slider = ft.Slider(min=0, max=100, divisions=100, value=allocations.get("sequential", 10), label="{value}%")
+            self.wordlist_slider = ft.Slider(min=0, max=100, divisions=100, value=allocations.get("wordlist", 10), label="{value}%")
+            self.sliders = [self.random_slider, self.sequential_slider, self.wordlist_slider]
             self.strategy_allocations_view.controls.extend([
                 ft.Row([ft.Text("Random", width=100), self.random_slider]),
                 ft.Row([ft.Text("Sequential", width=100), self.sequential_slider]),

@@ -1,4 +1,4 @@
-# core/state.py (v5.0 - Final)
+# core/state.py (v6.0 - Final)
 
 import flet as ft
 from queue import Queue
@@ -18,7 +18,7 @@ class AppState:
 
         # متغيرات التحكم في دورة حياة التطبيق والخيوط الخلفية
         self.is_running_app = True
-        self.is_running = False
+        self.is_running = False # المصدر الوحيد للحقيقة لحالة الفحص
         self.sys_monitor_running = False
 
         # طابور الأحداث للتواصل من الباك إند إلى الواجهة

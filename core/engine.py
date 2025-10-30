@@ -1,4 +1,4 @@
-# core/engine.py (v4.3 - إصلاح IndentationError)
+# core/engine.py (v6.0 - Final)
 
 import asyncio
 from loguru import logger
@@ -13,13 +13,17 @@ from services.key_generator import KeyGenerator, generate_batch_pure
 from services.blockchain_checker import BlockchainChecker
 from services.ai_classifier import AIClassifier
 from services.analytics_service import AnalyticsService
-from config.settings_manager import SettingsManager
+from config.settings_manager import get_settings_manager
 from core.models import FoundWallet
 
 class ScannerEngine:
+    """
+    العقل المدبر للتطبيق. يطبق نمط المراقب (Observer) للاستجابة الفورية لتغييرات الإعدادات.
+    يدير دورة حياة الفحص في خيط منفصل لضمان استجابة الواجهة.
+    """
     def __init__(self, app_state: AppState):
         self.state = app_state
-        self.settings_manager = SettingsManager()
+        self.settings_manager = get_settings_manager()
         self.settings_manager.register_observer(self)
 
         self.ai_classifier = AIClassifier()
@@ -27,9 +31,14 @@ class ScannerEngine:
 
         self.process_pool = ProcessPoolExecutor(max_workers=os.cpu_count())
 
+        # تطبيق الإعدادات الأولية عند الإنشاء
         self.on_settings_updated(self.settings_manager.settings)
 
     def on_settings_updated(self, new_settings: dict):
+        """
+        دالة رد نداء (Callback) يتم استدعاؤها تلقائيًا من SettingsManager.
+        تقوم بتحديث معلمات المحرك بشكل فوري.
+        """
         logger.info("ScannerEngine received new settings. Applying them immediately.")
         self.scanner_settings = new_settings.get("scanner", {})
         self.concurrency = self.scanner_settings.get("concurrency", 5000)
@@ -41,15 +50,14 @@ class ScannerEngine:
         self.state.add_log("⚙️ تم تطبيق الإعدادات الجديدة بنجاح.")
 
     def start_scan_in_thread(self):
+        """إنشاء وتشغيل حلقة الفحص في خيط منفصل لضمان عدم تجميد الواجهة."""
         if self.state.is_running: return
-
-        self.state.is_running = True
-        self.state.post_event("status_change", "running")
 
         thread = threading.Thread(target=lambda: asyncio.run(self.start_scan()), daemon=True)
         thread.start()
 
     async def verify_api_connection(self) -> bool:
+        """التحقق من أن مفتاح Alchemy API يعمل بشكل صحيح."""
         try:
             api_key = self.settings_manager.get("api_keys.alchemy")
             if not api_key:
@@ -61,7 +69,6 @@ class ScannerEngine:
             await asyncio.to_thread(w3.eth.get_block_number)
 
             self.state.post_event("api_status_update", "OK")
-            logger.info("API connection verification successful.")
             return True
         except Exception as e:
             logger.warning(f"API connection verification failed: {e}")
@@ -69,6 +76,10 @@ class ScannerEngine:
             return False
 
     async def start_scan(self):
+        """الحلقة الرئيسية لعملية الفحص. تعمل بشكل غير متزامن في خيطها الخاص."""
+        self.state.is_running = True
+        self.state.post_event("status_change", "running")
+
         self.state.session_scanned = 0
         self.state.add_log("🚀 Scan process started...")
         loop = asyncio.get_running_loop()
@@ -125,11 +136,12 @@ class ScannerEngine:
     def _self_tune_strategies(self):
         performance_ratios = self.analytics_service.get_strategy_performance()
         self.settings_manager.set("strategies.allocations", performance_ratios)
-        self.state.post_event("strategy_update", {k: f'{v:.1f}%' for k,v in performance_ratios.items()})
+        self.state.post_event("strategy_update", performance_ratios)
 
     def stop_scan(self):
+        """إيقاف حلقة الفحص بشكل آمن وحفظ التقدم."""
         if self.state.is_running:
+            logger.info("Scan stop requested. The loop will exit after the current batch.")
             self.state.is_running = False
             self.key_generator.save_state()
             self.key_generator.close_files()
-            logger.info("Scan stop requested. Exiting loop after current batch.")
