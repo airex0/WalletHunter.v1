@@ -1,4 +1,4 @@
-# core/engine.py (v3.2)
+# core/engine.py (v4.3 - إصلاح IndentationError)
 
 import asyncio
 from loguru import logger
@@ -9,7 +9,7 @@ from web3 import Web3, HTTPProvider
 import threading
 
 from .state import AppState
-from services.key_generator import KeyGenerator
+from services.key_generator import KeyGenerator, generate_batch_pure
 from services.blockchain_checker import BlockchainChecker
 from services.ai_classifier import AIClassifier
 from services.analytics_service import AnalyticsService
@@ -20,17 +20,29 @@ class ScannerEngine:
     def __init__(self, app_state: AppState):
         self.state = app_state
         self.settings_manager = SettingsManager()
-        self.key_generator = KeyGenerator(self.settings_manager)
-        self.blockchain_checker = BlockchainChecker(self.settings_manager)
+        self.settings_manager.register_observer(self)
+
         self.ai_classifier = AIClassifier()
         self.analytics_service = AnalyticsService()
 
         self.process_pool = ProcessPoolExecutor(max_workers=os.cpu_count())
 
+        self.on_settings_updated(self.settings_manager.settings)
+
+    def on_settings_updated(self, new_settings: dict):
+        logger.info("ScannerEngine received new settings. Applying them immediately.")
+        self.scanner_settings = new_settings.get("scanner", {})
+        self.concurrency = self.scanner_settings.get("concurrency", 5000)
+        self.delay = self.scanner_settings.get("delay", 1)
+
+        self.blockchain_checker = BlockchainChecker(self.settings_manager)
+        self.key_generator = KeyGenerator(self.settings_manager)
+
+        self.state.add_log("⚙️ تم تطبيق الإعدادات الجديدة بنجاح.")
+
     def start_scan_in_thread(self):
         if self.state.is_running: return
 
-        # --- الإصلاح: تحديث الحالة المركزية ---
         self.state.is_running = True
         self.state.post_event("status_change", "running")
 
@@ -62,19 +74,21 @@ class ScannerEngine:
         loop = asyncio.get_running_loop()
 
         while self.state.is_running:
-            self.settings_manager.settings = self.settings_manager._load_settings()
-            scanner_settings = self.settings_manager.get("scanner", {})
-            concurrency = scanner_settings.get("concurrency", 5000)
-            delay = scanner_settings.get("delay", 1)
-
             if self.settings_manager.get("strategies.ai_managed"):
                 self._self_tune_strategies()
 
             batch_start_time = time.time()
 
+            strategies_config_copy = self.settings_manager.get("strategies").copy()
+
             wallets_to_check = await loop.run_in_executor(
-                self.process_pool, self.key_generator.generate_batch, concurrency
+                self.process_pool, generate_batch_pure, strategies_config_copy, self.concurrency
             )
+
+            allocations = strategies_config_copy.get("allocations", {})
+            seq_count = int(self.concurrency * (allocations.get("sequential", 0) / 100))
+            if seq_count > 0:
+                self.key_generator.sequential_counter += seq_count
 
             activity_hits = await self.blockchain_checker._filter_for_activity(wallets_to_check)
 
@@ -94,8 +108,8 @@ class ScannerEngine:
                         self.state.add_found_wallet(wallet)
 
             batch_duration = time.time() - batch_start_time
-            self.state.scan_speed = concurrency / batch_duration if batch_duration > 0 else 0
-            self.state.session_scanned += concurrency
+            self.state.scan_speed = self.concurrency / batch_duration if batch_duration > 0 else 0
+            self.state.session_scanned += self.concurrency
 
             self.state.post_event("stats_update", {
                 "session_scanned": self.state.session_scanned,
@@ -103,7 +117,7 @@ class ScannerEngine:
                 "scan_speed": self.state.scan_speed
             })
 
-            await asyncio.sleep(delay)
+            await asyncio.sleep(self.delay)
 
         self.state.scan_speed = 0.0
         self.state.post_event("status_change", "stopped")
@@ -114,7 +128,6 @@ class ScannerEngine:
         self.state.post_event("strategy_update", {k: f'{v:.1f}%' for k,v in performance_ratios.items()})
 
     def stop_scan(self):
-        # --- الإصلاح: تحديث الحالة المركزية ---
         if self.state.is_running:
             self.state.is_running = False
             self.key_generator.save_state()
