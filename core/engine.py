@@ -1,15 +1,15 @@
-# core/engine.py (v6.0 - Final)
+# core/engine.py (v10.0 - Final)
 
 import asyncio
 from loguru import logger
 import time
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ThreadPoolExecutor
 import os
 from web3 import Web3, HTTPProvider
 import threading
 
 from .state import AppState
-from services.key_generator import KeyGenerator, generate_batch_pure
+from services.key_generator import KeyGenerator
 from services.blockchain_checker import BlockchainChecker
 from services.ai_classifier import AIClassifier
 from services.analytics_service import AnalyticsService
@@ -20,6 +20,7 @@ class ScannerEngine:
     """
     العقل المدبر للتطبيق. يطبق نمط المراقب (Observer) للاستجابة الفورية لتغييرات الإعدادات.
     يدير دورة حياة الفحص في خيط منفصل لضمان استجابة الواجهة.
+    يستخدم ThreadPoolExecutor للمهام الحاسوبية لضمان التوافق والموثوقية.
     """
     def __init__(self, app_state: AppState):
         self.state = app_state
@@ -29,7 +30,8 @@ class ScannerEngine:
         self.ai_classifier = AIClassifier()
         self.analytics_service = AnalyticsService()
 
-        self.process_pool = ProcessPoolExecutor(max_workers=os.cpu_count())
+        # استخدام ThreadPoolExecutor لأنه أكثر توافقًا وموثوقية في بيئات Flet و Replit
+        self.thread_pool = ThreadPoolExecutor(max_workers=os.cpu_count() * 5)
 
         # تطبيق الإعدادات الأولية عند الإنشاء
         self.on_settings_updated(self.settings_manager.settings)
@@ -69,6 +71,7 @@ class ScannerEngine:
             await asyncio.to_thread(w3.eth.get_block_number)
 
             self.state.post_event("api_status_update", "OK")
+            logger.info("API connection verification successful.")
             return True
         except Exception as e:
             logger.warning(f"API connection verification failed: {e}")
@@ -90,16 +93,15 @@ class ScannerEngine:
 
             batch_start_time = time.time()
 
-            strategies_config_copy = self.settings_manager.get("strategies").copy()
-
+            # استدعاء دالة التوليد الموحدة والبسيطة في ThreadPoolExecutor
             wallets_to_check = await loop.run_in_executor(
-                self.process_pool, generate_batch_pure, strategies_config_copy, self.concurrency
+                self.thread_pool, self.key_generator.generate_batch, self.concurrency
             )
 
-            allocations = strategies_config_copy.get("allocations", {})
-            seq_count = int(self.concurrency * (allocations.get("sequential", 0) / 100))
-            if seq_count > 0:
-                self.key_generator.sequential_counter += seq_count
+            if not wallets_to_check:
+                self.state.add_log("⚠️ لم يتم توليد أي محافظ. تحقق من إعدادات الاستراتيجيات وقوائم الكلمات.")
+                await asyncio.sleep(self.delay)
+                continue
 
             activity_hits = await self.blockchain_checker._filter_for_activity(wallets_to_check)
 
@@ -107,7 +109,7 @@ class ScannerEngine:
                 self.state.db_queue.put(('activity_hits', hit.__dict__))
 
             if activity_hits:
-                self.state.add_log(f"🔍 Found {len(activity_hits)} active wallets. Starting full balance check...")
+                self.state.add_log(f"🔍 تم العثور على {len(activity_hits)} محفظة نشطة. بدء الفحص الكامل...")
                 found_wallets_data = await self.blockchain_checker._check_balances_full(activity_hits)
 
                 if found_wallets_data:
@@ -134,6 +136,7 @@ class ScannerEngine:
         self.state.post_event("status_change", "stopped")
 
     def _self_tune_strategies(self):
+        """يقوم بتعديل نسب توزيع الاستراتيجيات بناءً على أدائها التاريخي."""
         performance_ratios = self.analytics_service.get_strategy_performance()
         self.settings_manager.set("strategies.allocations", performance_ratios)
         self.state.post_event("strategy_update", performance_ratios)
@@ -141,7 +144,7 @@ class ScannerEngine:
     def stop_scan(self):
         """إيقاف حلقة الفحص بشكل آمن وحفظ التقدم."""
         if self.state.is_running:
-            logger.info("Scan stop requested. The loop will exit after the current batch.")
             self.state.is_running = False
             self.key_generator.save_state()
             self.key_generator.close_files()
+            logger.info("Scan stop requested. Exiting loop after current batch.")

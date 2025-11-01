@@ -1,4 +1,4 @@
-# ui/views.py (v6.0 - Final)
+# ui/views.py (v9.0 - Final)
 
 import flet as ft
 import asyncio
@@ -145,11 +145,36 @@ class MainView(ft.View):
             self.page.update()
             self.engine.start_scan_in_thread()
 
+    async def listener_loop(self):
+        """
+        الحلقة الرئيسية التي تسحب الأحداث من الطابور وتعالجها.
+        تعمل طالما أن العرض (View) موجود على الشاشة.
+        """
+        logger.info("MainView listener loop started.")
+        api_check_counter = 0
+        while self.visible:
+            # معالجة الأحداث
+            try:
+                event = self.app_state.event_queue.get_nowait()
+                self.handle_event(event)
+            except:
+                pass # الطابور فارغ، وهذا طبيعي
+
+            # التحقق من حالة الـ API بشكل دوري
+            if api_check_counter % 300 == 0: # كل 30 ثانية (300 * 0.1s)
+                threading.Thread(target=lambda: asyncio.run(self.engine.verify_api_connection()), daemon=True).start()
+
+            api_check_counter += 1
+            await asyncio.sleep(0.1) # حلقة سريعة لضمان استجابة فورية
+        logger.info("MainView listener loop stopped.")
+
     async def did_mount_async(self):
+        """يتم استدعاؤها عند تحميل العرض لأول مرة."""
         self.sys_monitor.start()
-        threading.Thread(target=lambda: asyncio.run(self.engine.verify_api_connection()), daemon=True).start()
+        self.page.run_task(self.listener_loop)
 
     async def will_unmount_async(self):
+        """يتم استدعاؤها عند مغادرة العرض."""
         self.sys_monitor.stop()
 
 
